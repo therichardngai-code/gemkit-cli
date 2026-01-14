@@ -2,6 +2,8 @@
 
 A command-line interface for working with Gemini AI agents, plans, and sessions.
 
+![GemKit CLI Demo](public/Gemkit-with-Antigravity%20Part%201%20-%20FULL.gif)
+
 ## Installation
 
 ```bash
