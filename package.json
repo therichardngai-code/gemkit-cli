@@ -1,0 +1,47 @@
+{
+  "name": "gemkit-cli",
+  "version": "0.1.0",
+  "description": "CLI for working with Gemini AI agents, plans, and sessions",
+  "type": "module",
+  "author": "Richard Ng <the.richardng.ai@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/therichardngai-code/gemkit-cli.git"
+  },
+  "homepage": "https://gemkit.cc",
+  "bugs": {
+    "url": "https://github.com/therichardngai-code/gemkit-cli/issues"
+  },
+  "keywords": ["cli", "gemkit", "gemini", "ai"],
+  "main": "dist/index.js",
+  "bin": {
+    "gk": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=esm --minify --outfile=dist/index.js",
+    "build:dev": "tsc",
+    "typecheck": "tsc --noEmit",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "cac": "^6.7.14",
+    "dotenv": "^16.3.1",
+    "ora": "^8.0.1",
+    "picocolors": "^1.1.1",
+    "tar": "^7.5.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/tar": "^6.1.13",
+    "esbuild": "^0.27.2",
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
