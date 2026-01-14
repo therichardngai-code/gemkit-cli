@@ -2,7 +2,7 @@
 
 A command-line interface for working with Gemini AI agents, plans, and sessions.
 
-[Watch Demo Video](public/demo-final.mp4)
+![Demo](public/demo-final.gif)
 
 ## Installation
 
