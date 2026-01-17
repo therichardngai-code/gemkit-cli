@@ -31,6 +31,14 @@ export const DEFAULT_CONFIG: GemKitConfig = {
     defaultModel: 'gemini-2.5-flash',
     music: false,
   },
+  office: {
+    enabled: true,
+    mode: 'web',
+    port: 3847,
+    autoOpen: true,
+    sounds: false,
+    refreshRate: 500,
+  },
 };
 
 /**
@@ -77,5 +85,9 @@ export function mergeConfig(partial: Partial<GemKitConfig>): GemKitConfig {
       ...DEFAULT_CONFIG.spawn,
       ...(partial.spawn || {}),
     },
+    office: {
+      ...DEFAULT_CONFIG.office,
+      ...(partial.office || {}),
+    } as Exclude<GemKitConfig['office'], undefined>,
   };
 }

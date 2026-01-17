@@ -30,6 +30,7 @@ gk <command> [options]
 | `gk init` | Initialize GemKit in your project |
 | `gk new` | Create new agents, plans, or skills |
 | `gk agent` | Manage and spawn AI agents |
+| `gk office` | Agent Office visualization dashboard |
 | `gk session` | View and manage sessions |
 | `gk plan` | Work with execution plans |
 | `gk tokens` | Analyze token usage and costs |
@@ -43,14 +44,52 @@ gk <command> [options]
 | `gk convert` | Convert between formats |
 | `gk paste-image` | Handle image pasting |
 
+### Agent Commands
+
+| Command | Description |
+|---------|-------------|
+| `gk agent list` | List all available agent profiles |
+| `gk agent info <name>` | Show agent profile details |
+| `gk agent search "<task>"` | Find best agent+skills for a task |
+| `gk agent spawn -p "<prompt>"` | Spawn a sub-agent |
+
+**Spawn Options:**
+- `-a, --agent <name>` - Agent profile name
+- `-s, --skills <list>` - Comma-separated skills to inject
+- `-c, --context <files>` - Context files (@file syntax)
+- `-m, --model <model>` - Model override
+- `--music` - Play elevator music while waiting
+
+### Agent Office Commands
+
+| Command | Description |
+|---------|-------------|
+| `gk office start` | Start the web visualization dashboard |
+| `gk office status` | Show current office state |
+| `gk office watch` | Watch office state changes in real-time |
+
+**Options:**
+- `-p, --port <n>` - Web server port (default: 3847)
+- `--no-open` - Don't auto-open browser
+- `--json` - Output as JSON
+
 ## Quick Start
 
 ```bash
 # Initialize in your project
 gk init
 
-# Spawn an agent
-gk agent spawn "Help me write a function"
+# Spawn an agent with a task
+gk agent spawn -p "Help me write a function"
+
+# Spawn with specific agent profile and skills
+gk agent spawn -a researcher -s "frontend-design" -p "Build a dashboard"
+
+# Search for the best agent for a task
+gk agent search "implement user authentication"
+
+# Start the Agent Office dashboard
+gk office start
 
 # View session history
 gk session list

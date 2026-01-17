@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Office - GemKit</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header id="header">
+      <div class="header-left">
+        <span class="crown">&#x1F451;</span>
+        <h1>AGENT OFFICE</h1>
+        <span class="crown">&#x1F451;</span>
+      </div>
+      <div class="header-right">
+        <span id="connection-status" class="status-badge disconnected">Disconnected</span>
+      </div>
+    </header>
+
+    <!-- Notification Banner -->
+    <div id="notification-banner" class="hidden">
+      <span id="notification-text"></span>
+    </div>
+
+    <!-- Main Content -->
+    <main id="main">
+      <!-- Documents Panel (Left) -->
+      <aside id="docs-panel" class="panel left-panel hidden">
+        <div class="panel-header">
+          <span class="panel-icon">&#x1F4C1;</span>
+          <span>DOCUMENTS</span>
+          <button class="close-btn" onclick="toggleDocs()">&times;</button>
+        </div>
+        <div id="docs-content" class="panel-content"></div>
+      </aside>
+
+      <!-- Office Floor -->
+      <section id="office-floor">
+        <!-- Orchestrator Area -->
+        <div id="orchestrator-area">
+          <div id="orchestrator-desk" class="desk orchestrator"></div>
+        </div>
+
+        <!-- Connection Lines -->
+        <div id="connection-lines"></div>
+
+        <!-- Agents Grid -->
+        <div id="agents-grid"></div>
+      </section>
+
+      <!-- Inbox Panel (Right) -->
+      <aside id="inbox-panel" class="panel right-panel hidden">
+        <div class="panel-header">
+          <span class="panel-icon">&#x1F4EC;</span>
+          <span>INBOX</span>
+          <span id="inbox-badge" class="badge">0</span>
+          <button class="close-btn" onclick="toggleInbox()">&times;</button>
+        </div>
+        <div id="inbox-content" class="panel-content"></div>
+      </aside>
+    </main>
+
+    <!-- Footer -->
+    <footer id="footer">
+      <div class="footer-left">
+        <button class="footer-btn" onclick="toggleDocs()">
+          <span>&#x1F4C1;</span> Docs
+          <span id="docs-count" class="badge">0</span>
+        </button>
+        <button class="footer-btn" onclick="toggleInbox()">
+          <span>&#x1F4EC;</span> Inbox
+          <span id="inbox-count" class="badge">0</span>
+        </button>
+      </div>
+      <div class="footer-center">
+        <span id="session-info">No active session</span>
+      </div>
+      <div class="footer-right">
+        <span id="agent-count">Agents: 0/0</span>
+      </div>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -8,10 +8,14 @@
 
 import type { CAC } from 'cac';
 import { spawn } from 'child_process';
+import { access, stat, readdir, readFile } from 'fs/promises';
+import { join, basename, extname, relative } from 'path';
 import { listAgentProfiles, loadAgentProfile, formatAgentProfile } from '../../domains/agent/profile.js';
 import { searchAgentSkillCombination, loadSkillContent } from '../../domains/agent/search.js';
 import { loadConfig } from '../../domains/config/manager.js';
 import { readEnv } from '../../domains/session/env.js';
+import { addAgent } from '../../domains/session/writer.js';
+import { generateGkSessionId } from '../../services/hash.js';
 import { logger } from '../../services/logger.js';
 import { brand, ui, pc } from '../../utils/colors.js';
 import { ElevatorMusic } from '../../services/music.js';
@@ -492,13 +496,187 @@ async function handleSpawn(options: {
   const model = options.model || profile?.model || config.spawn.defaultModel;
 
   // Resolve music setting: CLI flag > config default
-  const musicEnabled = options.music !== undefined ? options.music : config.spawn.music;
+  // CAC sets options.music=true by default when --no-music is defined, so check argv explicitly
+  const hasExplicitMusicFlag = process.argv.includes('--music') || process.argv.includes('--no-music');
+  const musicEnabled = hasExplicitMusicFlag ? options.music : config.spawn.music;
   const musicFile = options.musicFile || config.spawn.musicFile;
 
   // Build skills list
   const cliSkills = options.skills?.split(',').map(s => s.trim()) || [];
   const agentSkills = profile?.skills || [];
   const allSkills = [...new Set([...agentSkills, ...cliSkills])];
+
+  // LoadedContext type - aligned with gemini_agent.js context objects
+  interface LoadedContext {
+    type: 'context';
+    name: string;
+    path: string;
+    content: string;
+    originalRef: string;
+    relativePath?: string;
+  }
+
+  // Build context list - aligned with gemini_agent.js
+  // Parse context refs: split by comma, then by spaces, filter empty strings
+  const contextRefs = options.context
+    ? options.context.split(',').flatMap(part => part.trim().split(/\s+/).filter(s => s)).filter(s => s)
+    : [];
+
+  // loadContext - aligned with gemini_agent.js loadContext()
+  async function loadContext(contextRef: string): Promise<LoadedContext | LoadedContext[]> {
+    let fullPath = contextRef;
+    let found = false;
+
+    // Handle @ prefix references
+    if (contextRef.startsWith('@')) {
+      const relativePath = contextRef.substring(1);
+      const searchPaths = [
+        join(process.cwd(), '.docs', relativePath),
+        join(process.cwd(), '.plans', relativePath),
+        join(process.cwd(), 'docs', relativePath),
+        join(process.cwd(), 'plans', relativePath),
+        join(process.cwd(), relativePath)
+      ];
+
+      for (const searchPath of searchPaths) {
+        try {
+          await access(searchPath);
+          fullPath = searchPath;
+          found = true;
+          break;
+        } catch {
+          continue;
+        }
+      }
+
+      // If @ prefix file not found, show clear error with searched paths
+      if (!found) {
+        const pathsList = searchPaths.map(p => `  - ${p}`).join('\n');
+        throw new Error(
+          `Context file not found: ${contextRef}\n` +
+          `Searched paths:\n${pathsList}\n` +
+          `Tip: Place file in .docs/, .plans/, docs/, plans/, or project root`
+        );
+      }
+    }
+
+    try {
+      // Check if path is a directory
+      const fileStat = await stat(fullPath);
+
+      if (fileStat.isDirectory()) {
+        return await loadContextDirectory(fullPath, contextRef);
+      }
+
+      // It's a file - load it directly
+      const content = await readFile(fullPath, 'utf-8');
+      const fileName = basename(fullPath);
+
+      return {
+        type: 'context',
+        name: fileName,
+        path: fullPath,
+        content: content.trim(),
+        originalRef: contextRef
+      };
+    } catch (error) {
+      throw new Error(`Failed to load context from ${contextRef}: ${(error as Error).message}`);
+    }
+  }
+
+  // loadContextDirectory - aligned with gemini_agent.js loadContextDirectory()
+  async function loadContextDirectory(dirPath: string, originalRef: string): Promise<LoadedContext[]> {
+    const maxDepth = 3;
+    const extensions = ['.md', '.txt', '.json', '.yaml', '.yml'];
+    const contexts: LoadedContext[] = [];
+
+    async function walkDir(currentPath: string, depth: number = 0): Promise<void> {
+      if (depth > maxDepth) return;
+
+      const entries = await readdir(currentPath, { withFileTypes: true });
+
+      for (const entry of entries) {
+        const entryPath = join(currentPath, entry.name);
+
+        // Skip hidden files and directories
+        if (entry.name.startsWith('.')) continue;
+
+        if (entry.isDirectory()) {
+          await walkDir(entryPath, depth + 1);
+        } else if (entry.isFile()) {
+          const ext = extname(entry.name).toLowerCase();
+          if (extensions.includes(ext)) {
+            try {
+              const content = await readFile(entryPath, 'utf-8');
+              const relativePath = relative(dirPath, entryPath);
+
+              contexts.push({
+                type: 'context',
+                name: entry.name,
+                path: entryPath,
+                relativePath: relativePath,
+                content: content.trim(),
+                originalRef: `${originalRef}/${relativePath}`
+              });
+            } catch (err) {
+              console.warn(`Warning: Could not read ${entryPath}: ${(err as Error).message}`);
+            }
+          }
+        }
+      }
+    }
+
+    await walkDir(dirPath);
+
+    // Sort by relative path for consistent ordering
+    contexts.sort((a, b) => (a.relativePath || '').localeCompare(b.relativePath || ''));
+
+    return contexts;
+  }
+
+  // formatContext - aligned with gemini_agent.js formatContext()
+  function formatContext(contextItems: LoadedContext[]): string {
+    if (!contextItems || contextItems.length === 0) {
+      return '';
+    }
+
+    let contextSection = '<context>\n';
+    contextSection += 'The following documents provide additional context for this task:\n\n';
+
+    contextItems.forEach((ctx, index) => {
+      contextSection += `## Document ${index + 1}: ${ctx.name}\n`;
+      contextSection += `Source: ${ctx.originalRef}\n\n`;
+    });
+
+    contextSection += '</context>\n\n';
+
+    return contextSection;
+  }
+
+  // Load context files/directories - aligned with gemini_agent.js buildAgentContext()
+  const loadedContexts: LoadedContext[] = [];
+  if (contextRefs && contextRefs.length > 0) {
+    for (const ctx of contextRefs) {
+      try {
+        if (typeof ctx === 'string') {
+          const loaded = await loadContext(ctx);
+          // Handle both single file (object) and directory (array) results
+          if (Array.isArray(loaded)) {
+            loadedContexts.push(...loaded);
+          } else {
+            loadedContexts.push(loaded);
+          }
+        } else {
+          loadedContexts.push(ctx);
+        }
+      } catch (error) {
+        console.log();
+        logger.error((error as Error).message);
+        console.log();
+        process.exit(1);
+      }
+    }
+  }
 
   // Agent display name
   const agentDisplayName = profile?.name || options.agent || 'Sub';
@@ -514,10 +692,10 @@ async function handleSpawn(options: {
     activePlan: activePlan,
     projectDir: projectDir
   });
-  promptParts.push('<system-context>');
+  promptParts.push('<subagent-context>');
   promptParts.push(subagentContext);
-  promptParts.push('</system-context>\n');
-
+  promptParts.push('</subagent-context>\n');
+  
   // Add task/prompt
   promptParts.push('<task>');
   promptParts.push(options.prompt);
@@ -549,6 +727,11 @@ async function handleSpawn(options: {
     promptParts.push('</skills>\n');
   }
 
+  // Add context section - aligned with gemini_agent.js formatContext()
+  if (loadedContexts.length > 0) {
+    promptParts.push(formatContext(loadedContexts));
+  }
+
   const enrichedPrompt = promptParts.join('\n');
 
   // Truncate prompt for env var (150 chars)
@@ -566,6 +749,9 @@ async function handleSpawn(options: {
   }
   if (allSkills.length > 0) {
     logger.info(`Injected skills: ${brand.dim(allSkills.join(', '))}`);
+  }
+  if (loadedContexts.length > 0) {
+    logger.info(`Injected context: ${brand.dim(loadedContexts.map(c => c.name).join(', '))}`);
   }
   console.log(ui.line());
   console.log();
@@ -586,15 +772,33 @@ async function handleSpawn(options: {
     }
   }
 
+  // Prepare injected info for tracking - aligned with gemini_agent.js line 911
+  const injectedContext = loadedContexts.map(c => c.path || c.name);
+
+  // Generate sub-agent session ID and add to session file IMMEDIATELY
+  // This allows dashboard to show agent right when music starts
+  // The ID is passed to hook via GK_SUB_SESSION_ID so hook updates same agent
+  const subAgentSessionId = generateGkSessionId('gemini-sub', process.pid);
+  if (parentGkSessionId && projectDir) {
+    addAgent(projectDir, parentGkSessionId, {
+      gkSessionId: subAgentSessionId,
+      pid: process.pid,
+      parentGkSessionId: parentGkSessionId,
+      agentRole: agentDisplayName,
+      prompt: options.prompt,
+      model: model,
+      injected: (allSkills.length > 0 || injectedContext.length > 0)
+        ? { skills: allSkills, context: injectedContext }
+        : null
+    });
+  }
+
   // Start heartbeat
   const heartbeat = startHeartbeat(agentDisplayName);
 
-  // Context files (for tracking in session)
-  const contextFiles = options.context ? options.context.split(',').map((c: string) => c.trim()) : [];
-
   // Spawn with environment variables
   // Note: Sub-agent registration is handled by gk-session-init.cjs hook
-  // All agent metadata is passed via env vars for the hook to use
+  // GK_SUB_SESSION_ID is passed so hook uses same ID (prevents duplicate agents)
   const child = spawn('gemini', ['-y', '-m', model], {
     stdio: ['pipe', 'pipe', 'pipe'],
     shell: process.platform === 'win32',
@@ -603,11 +807,12 @@ async function handleSpawn(options: {
       GEMINI_TYPE: 'sub-agent',
       GEMINI_PARENT_SESSION_ID: parentGeminiSessionId || '',
       GK_PARENT_SESSION_ID: parentGkSessionId || '',
+      GK_SUB_SESSION_ID: subAgentSessionId,
       GEMINI_AGENT_ROLE: agentDisplayName,
       GEMINI_AGENT_PROMPT: truncatedPrompt,
       GEMINI_AGENT_MODEL: model || '',
       GEMINI_AGENT_SKILLS: allSkills.join(','),
-      GEMINI_AGENT_CONTEXT: contextFiles.join(','),
+      GEMINI_AGENT_CONTEXT: injectedContext.join(','),
       GK_ACTIVE_PLAN: activePlan || '',
       GK_SUGGESTED_PLAN: suggestedPlan || '',
       GK_PLAN_DATE_FORMAT: planDateFormat || ''

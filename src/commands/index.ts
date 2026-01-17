@@ -19,6 +19,7 @@ import { registerExtensionCommand } from './extension/index.js';
 import { registerCatalogCommand } from './catalog/index.js';
 import { registerPasteImageCommand } from './paste-image/index.js';
 import { registerConvertCommand } from './convert/index.js';
+import { registerOfficeCommand } from './office/index.js';
 
 export function registerCommands(cli: CAC): void {
   registerInitCommand(cli);
@@ -36,4 +37,5 @@ export function registerCommands(cli: CAC): void {
   registerCatalogCommand(cli);
   registerPasteImageCommand(cli);
   registerConvertCommand(cli);
+  registerOfficeCommand(cli);
 }

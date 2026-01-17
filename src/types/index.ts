@@ -32,6 +32,14 @@ export interface GemKitConfig {
     music: boolean;
     musicFile?: string;
   };
+  office?: {
+    enabled: boolean;
+    mode: 'web' | 'terminal' | 'both';
+    port: number;
+    autoOpen: boolean;
+    sounds: boolean;
+    refreshRate: number;
+  };
 }
 
 // ============ Installation Types ============
