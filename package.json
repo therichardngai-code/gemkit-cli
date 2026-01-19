@@ -1,6 +1,6 @@
 {
   "name": "gemkit-cli",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "CLI for working with Gemini AI agents, plans, and sessions",
   "type": "module",
   "author": "Richard Ng <the.richardng.ai@gmail.com>",
