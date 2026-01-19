@@ -17,7 +17,7 @@ import { registerPlanCommand } from './plan/index.js';
 import { registerTokensCommand } from './tokens/index.js';
 import { registerExtensionCommand } from './extension/index.js';
 import { registerCatalogCommand } from './catalog/index.js';
-import { registerPasteImageCommand } from './paste-image/index.js';
+import { registerPasteCommand } from './paste/index.js';
 import { registerConvertCommand } from './convert/index.js';
 import { registerOfficeCommand } from './office/index.js';
 
@@ -35,7 +35,7 @@ export function registerCommands(cli: CAC): void {
   registerTokensCommand(cli);
   registerExtensionCommand(cli);
   registerCatalogCommand(cli);
-  registerPasteImageCommand(cli);
+  registerPasteCommand(cli);
   registerConvertCommand(cli);
   registerOfficeCommand(cli);
 }

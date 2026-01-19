@@ -39,6 +39,11 @@ export const DEFAULT_CONFIG: GemKitConfig = {
     sounds: false,
     refreshRate: 500,
   },
+  update: {
+    autoCheck: true,
+    checkInterval: 24, // hours
+    notifyOnly: true, // only notify, don't auto-update
+  },
 };
 
 /**
@@ -89,5 +94,9 @@ export function mergeConfig(partial: Partial<GemKitConfig>): GemKitConfig {
       ...DEFAULT_CONFIG.office,
       ...(partial.office || {}),
     } as Exclude<GemKitConfig['office'], undefined>,
+    update: {
+      ...DEFAULT_CONFIG.update,
+      ...(partial.update || {}),
+    } as Exclude<GemKitConfig['update'], undefined>,
   };
 }

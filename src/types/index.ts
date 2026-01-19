@@ -40,6 +40,11 @@ export interface GemKitConfig {
     sounds: boolean;
     refreshRate: number;
   };
+  update?: {
+    autoCheck: boolean;
+    checkInterval: number; // hours between checks
+    notifyOnly: boolean; // if true, only notify, don't auto-update
+  };
 }
 
 // ============ Installation Types ============

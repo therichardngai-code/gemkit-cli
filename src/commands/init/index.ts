@@ -1,7 +1,7 @@
 import type { CAC } from 'cac';
 import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import ora from 'ora';
 import { fetchReleases, getLatestRelease, getReleaseByVersion } from '../../domains/github/releases.js';
 import { downloadRelease } from '../../domains/github/download.js';
@@ -11,6 +11,23 @@ import { createMetadata, saveMetadata, isInstalled } from '../../domains/install
 import { getExtensionsDir } from '../../utils/paths.js';
 import { logger } from '../../services/logger.js';
 import { brand, ui, pc } from '../../utils/colors.js';
+import { CLI_VERSION } from '../update/index.js';
+import { getLatestNpmVersion, isUpdateAvailable } from '../../services/npm.js';
+
+// Package name for CLI
+const CLI_PACKAGE_NAME = 'gemkit-cli';
+
+/**
+ * Update CLI via npm
+ */
+function updateCli(version: string): boolean {
+  const result = spawnSync('npm', ['install', '-g', `${CLI_PACKAGE_NAME}@${version}`], {
+    encoding: 'utf-8',
+    stdio: 'pipe',
+    shell: true,
+  });
+  return result.status === 0;
+}
 
 /**
  * Installation modes for different AI coding assistants
@@ -257,12 +274,37 @@ export function registerInitCommand(cli: CAC): void {
 
       console.log();
       console.log(pc.bold(brand.geminiPurple('Initializing GemKit')));
-      console.log(`  ${brand.dim('Mode:')} ${brand.accent(getModeDescription(mode))}`);
+      console.log();
+      console.log(`  ${brand.dim('Mode')}  ${brand.accent(getModeDescription(mode))}`);
       console.log();
 
-      // Step 1: Fetch release info
+      // Check CLI version and auto-update if available
+      const cliSpinner = ora({
+        text: 'Checking CLI version...',
+        color: 'magenta'
+      }).start();
+
+      try {
+        const latestCli = await getLatestNpmVersion(CLI_PACKAGE_NAME);
+        if (latestCli && isUpdateAvailable(CLI_VERSION, latestCli.version)) {
+          cliSpinner.text = `Updating CLI v${CLI_VERSION} → v${latestCli.version}...`;
+
+          const updated = updateCli(latestCli.version);
+          if (updated) {
+            cliSpinner.succeed(`CLI updated v${brand.primary(CLI_VERSION)} → v${brand.primary(latestCli.version)}`);
+          } else {
+            cliSpinner.warn(`CLI v${brand.primary(CLI_VERSION)} (update to v${latestCli.version} failed)`);
+          }
+        } else {
+          cliSpinner.succeed(`CLI v${brand.primary(CLI_VERSION)}`);
+        }
+      } catch {
+        cliSpinner.succeed(`CLI v${brand.primary(CLI_VERSION)}`);
+      }
+
+      // Step 1: Fetch Kits release info
       const fetchSpinner = ora({
-        text: 'Fetching latest release...',
+        text: 'Fetching latest Kits release...',
         color: 'magenta'
       }).start();
 
@@ -271,33 +313,33 @@ export function registerInitCommand(cli: CAC): void {
         : await getLatestRelease();
 
       if (!release) {
-        fetchSpinner.fail('No release found');
+        fetchSpinner.fail('No Kits release found');
         console.log();
         process.exit(1);
       }
 
-      fetchSpinner.succeed(`Found version ${brand.primary(release.version)}`);
+      fetchSpinner.succeed(`Found Kits v${brand.primary(release.version)}`);
 
-      // Step 2: Download release
+      // Step 2: Download Kits
       const downloadSpinner = ora({
-        text: 'Downloading release...',
+        text: 'Downloading Kits...',
         color: 'magenta'
       }).start();
 
       let tarPath: string;
       try {
         tarPath = await downloadRelease(release);
-        downloadSpinner.succeed('Download complete');
+        downloadSpinner.succeed('Kits downloaded');
       } catch (error) {
-        downloadSpinner.fail(`Download failed: ${error instanceof Error ? error.message : String(error)}`);
+        downloadSpinner.fail(`Kits download failed: ${error instanceof Error ? error.message : String(error)}`);
         console.log();
         process.exit(1);
       }
 
-      // Step 3: Extract files
+      // Step 3: Extract Kits
       const excludePatterns = getExcludePatterns(mode);
       const extractSpinner = ora({
-        text: mode === 'full' ? 'Extracting files...' : `Extracting files (${mode} mode)...`,
+        text: mode === 'full' ? 'Extracting Kits...' : `Extracting Kits (${mode} mode)...`,
         color: 'magenta'
       }).start();
 
@@ -310,7 +352,7 @@ export function registerInitCommand(cli: CAC): void {
       });
 
       if (!result.success) {
-        extractSpinner.fail(`Extraction failed: ${result.error}`);
+        extractSpinner.fail(`Kits extraction failed: ${result.error}`);
         console.log();
         process.exit(1);
       }
@@ -322,7 +364,7 @@ export function registerInitCommand(cli: CAC): void {
       saveMetadata(metadata);
 
       console.log();
-      logger.success(`GemKit ${brand.primary(release.version)} installed successfully!`);
+      logger.success(`Kits v${brand.primary(release.version)} installed successfully!`);
 
       // Step 4: Install spawn-agent extension (unless skipped or using non-Gemini mode)
       const shouldInstallExtension = !options.skipExtension && (mode === 'full' || mode === 'gemini');
