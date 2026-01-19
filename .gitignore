@@ -29,3 +29,6 @@ coverage/
 *.tgz
 .npmrc
 
+.gemini/
+.claude/
+docs/

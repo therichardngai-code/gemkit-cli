@@ -35,11 +35,15 @@ export type Domain =
 // Complexity levels for skill count
 export type Complexity = 'simple' | 'standard' | 'full' | 'complex';
 
+// CLI provider for spawn command
+export type CliProvider = 'gemini' | 'claude';
+
 export interface AgentProfile {
   name: string;
   description: string;
   model: string;
   skills?: string[];
+  tools?: string[];
   content: string;
   filePath: string;
 }

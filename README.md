@@ -1,6 +1,6 @@
 # GemKit CLI
 
-A command-line interface for working with Gemini AI agents, plans, and sessions.
+A command-line interface for working with Gemini and Claude AI agents, plans, and sessions.
 
 ![Demo](public/demo-final.gif)
 
@@ -42,7 +42,7 @@ gk <command> [options]
 | `gk extension` | Manage extensions |
 | `gk catalog` | Browse available kits |
 | `gk convert` | Convert between formats |
-| `gk paste-image` | Handle image pasting |
+| `gk paste` | Handle image and video pasting |
 
 ### Agent Commands
 
@@ -58,7 +58,14 @@ gk <command> [options]
 - `-s, --skills <list>` - Comma-separated skills to inject
 - `-c, --context <files>` - Context files (@file syntax)
 - `-m, --model <model>` - Model override
+- `-t, --tools <list>` - Comma-separated tools to auto-approve
+- `--cli <provider>` - CLI provider: `gemini` (default) or `claude`
 - `--music` - Play elevator music while waiting
+
+**CLI Providers:**
+- `gemini` - Uses Gemini CLI (default). Loads from `.gemini/agents/`
+- `claude` - Uses Claude CLI. Loads from `.claude/agents/`
+- Models and tools are automatically mapped between providers when using fallback
 
 ### Agent Office Commands
 
@@ -84,6 +91,12 @@ gk agent spawn -p "Help me write a function"
 
 # Spawn with specific agent profile and skills
 gk agent spawn -a researcher -s "frontend-design" -p "Build a dashboard"
+
+# Spawn with Claude CLI instead of Gemini
+gk agent spawn --cli claude -a researcher -p "Analyze the codebase"
+
+# Spawn with auto-approved tools
+gk agent spawn -a code-executor -t "Read,Write,Bash" -p "Fix the bug"
 
 # Search for the best agent for a task
 gk agent search "implement user authentication"

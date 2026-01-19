@@ -10,8 +10,16 @@ import type { CAC } from 'cac';
 import { spawn } from 'child_process';
 import { access, stat, readdir, readFile } from 'fs/promises';
 import { join, basename, extname, relative } from 'path';
-import { listAgentProfiles, loadAgentProfile, formatAgentProfile } from '../../domains/agent/profile.js';
+import {
+  listAgentProfiles,
+  loadAgentProfile,
+  formatAgentProfile,
+  loadAgentProfileWithFallback,
+  listAgentProfilesWithFallback
+} from '../../domains/agent/profile.js';
 import { searchAgentSkillCombination, loadSkillContent } from '../../domains/agent/search.js';
+import { mapModel, mapTools, getDefaultModel } from '../../domains/agent/mappings.js';
+import type { CliProvider } from '../../domains/agent/types.js';
 import { loadConfig } from '../../domains/config/manager.js';
 import { readEnv } from '../../domains/session/env.js';
 import { addAgent } from '../../domains/session/writer.js';
@@ -217,7 +225,7 @@ function showSearchHelp(): void {
 function showSpawnHelp(): void {
   console.log();
   console.log(pc.bold(brand.geminiPurple('gk agent spawn')));
-  console.log(brand.dim('Spawn a sub-agent with Gemini CLI'));
+  console.log(brand.dim('Spawn a sub-agent with Gemini or Claude CLI'));
   console.log();
   console.log('Usage:');
   console.log(`  ${brand.primary('gk agent spawn')} -p "<prompt>" [options]`);
@@ -226,19 +234,34 @@ function showSpawnHelp(): void {
   console.log(`  ${brand.dim('-p, --prompt <text>')}     Task prompt for the agent`);
   console.log();
   console.log('Options:');
-  console.log(`  ${brand.dim('-a, --agent <name>')}      Agent profile name (from .gemini/agents/)`);
+  console.log(`  ${brand.dim('-a, --agent <name>')}      Agent profile name`);
   console.log(`  ${brand.dim('-s, --skills <list>')}     Comma-separated skill names to inject`);
   console.log(`  ${brand.dim('-c, --context <files>')}   Context files (@file syntax)`);
   console.log(`  ${brand.dim('-m, --model <model>')}     Model override (default: from config)`);
+  console.log(`  ${brand.dim('-t, --tools <list>')}      Comma-separated tools to auto-approve`);
+  console.log(`  ${brand.dim('--cli <provider>')}        CLI provider: gemini (default) or claude`);
   console.log(`  ${brand.dim('--music')}                 Play elevator music while waiting`);
   console.log(`  ${brand.dim('--no-music')}              Disable elevator music`);
   console.log(`  ${brand.dim('--music-file <path>')}     Custom music file path`);
+  console.log();
+  console.log('CLI Providers:');
+  console.log(`  ${brand.dim('gemini')}   Uses Gemini CLI (default). Loads from .gemini/agents/, falls back to .claude/agents/`);
+  console.log(`  ${brand.dim('claude')}   Uses Claude CLI. Loads from .claude/agents/, falls back to .gemini/agents/`);
+  console.log(`  ${brand.dim('Models and tools are automatically mapped between providers when using fallback.')}`);
   console.log();
   console.log('Examples:');
   console.log(`  ${brand.dim('gk agent spawn -p "fix the login bug"')}`);
   console.log(`  ${brand.dim('gk agent spawn -a researcher -p "research React best practices"')}`);
   console.log(`  ${brand.dim('gk agent spawn -a code-executor -s "frontend-design" -p "build a dashboard"')}`);
   console.log(`  ${brand.dim('gk agent spawn -p "implement auth" -m gemini-2.5-pro --music')}`);
+  console.log(`  ${brand.dim('gk agent spawn -a researcher -t "list_directory,read_file,glob" -p "analyze code"')}`);
+  console.log(`  ${brand.dim('gk agent spawn --cli claude -a researcher -p "analyze codebase"')}`);
+  console.log();
+  console.log('Allowed Tools:');
+  console.log(`  ${brand.dim('Tools can be defined in agent frontmatter (tools: tool1, tool2)')}`);
+  console.log(`  ${brand.dim('or passed via CLI. Both sources are merged and deduplicated.')}`);
+  console.log(`  ${brand.dim('Gemini tools: list_directory, read_file, write_file, glob, run_shell_command(*)')}`);
+  console.log(`  ${brand.dim('Claude tools: Read, Write, Edit, Bash, Glob, Grep, WebFetch, WebSearch')}`);
   console.log();
 }
 
@@ -258,11 +281,13 @@ export function registerAgentCommand(cli: CAC): void {
     .option('-d, --domain <domain>', '[search] Force domain: frontend|backend|auth|payment|database|mobile|ai')
     .option('--max-skills <n>', '[search] Maximum skills to include')
     // Spawn options
-    .option('-a, --agent <name>', '[spawn] Agent profile name from .gemini/agents/')
+    .option('-a, --agent <name>', '[spawn] Agent profile name')
     .option('-p, --prompt <text>', '[spawn] Task prompt (required for spawn)')
     .option('-s, --skills <list>', '[spawn] Comma-separated skill names')
     .option('-c, --context <files>', '[spawn] Context files (@file syntax)')
     .option('-m, --model <model>', '[spawn] Model override')
+    .option('-t, --tools <list>', '[spawn] Comma-separated tools to auto-approve')
+    .option('--cli <provider>', '[spawn] CLI provider: gemini (default) or claude')
     .option('--music', '[spawn] Play elevator music while waiting')
     .option('--no-music', '[spawn] Disable elevator music')
     .option('--music-file <path>', '[spawn] Custom music file path')
@@ -458,6 +483,8 @@ async function handleSpawn(options: {
   skills?: string;
   context?: string;
   model?: string;
+  tools?: string;
+  cli?: string;
   music?: boolean;
   musicFile?: string;
 }) {
@@ -468,6 +495,9 @@ async function handleSpawn(options: {
     showSpawnHelp();
     process.exit(1);
   }
+
+  // Parse and validate CLI provider
+  const cliProvider: CliProvider = (options.cli === 'claude') ? 'claude' : 'gemini';
 
   const config = loadConfig();
 
@@ -480,20 +510,23 @@ async function handleSpawn(options: {
   const planDateFormat = env.PLAN_DATE_FORMAT || null;
   const projectDir = env.PROJECT_DIR || null;
 
-  // Load agent profile if specified
+  // Load agent profile if specified (with fallback between providers)
   let profile = null;
   if (options.agent) {
-    profile = loadAgentProfile(options.agent);
+    profile = loadAgentProfileWithFallback(options.agent, cliProvider);
     if (!profile) {
       console.log();
       logger.error(`Agent profile not found: ${options.agent}`);
+      console.log(brand.dim(`Searched: .${cliProvider === 'claude' ? 'claude' : 'gemini'}/agents/ and fallback folder`));
       console.log();
       process.exit(1);
     }
   }
 
-  // Determine model
-  const model = options.model || profile?.model || config.spawn.defaultModel;
+  // Determine model (map to target provider if needed)
+  let model = options.model || profile?.model || config.spawn.defaultModel;
+  // Map model to target provider format
+  model = mapModel(model, cliProvider);
 
   // Resolve music setting: CLI flag > config default
   // CAC sets options.music=true by default when --no-music is defined, so check argv explicitly
@@ -502,9 +535,17 @@ async function handleSpawn(options: {
   const musicFile = options.musicFile || config.spawn.musicFile;
 
   // Build skills list
-  const cliSkills = options.skills?.split(',').map(s => s.trim()) || [];
+  const cliSkills = options.skills?.split(',').map(s => s.trim()).filter(Boolean) || [];
   const agentSkills = profile?.skills || [];
   const allSkills = [...new Set([...agentSkills, ...cliSkills])];
+
+  // Build tools list (merge agent profile tools with CLI tools, deduplicated)
+  // Note: profile?.tools already mapped by loadAgentProfileWithFallback if from fallback path
+  const cliTools = options.tools?.split(',').map(s => s.trim()).filter(Boolean) || [];
+  const agentTools = profile?.tools || [];
+  const mergedTools = [...new Set([...agentTools, ...cliTools])];
+  // Map CLI tools to target provider (agentTools already mapped if from fallback)
+  const allTools = mapTools(mergedTools, cliProvider);
 
   // LoadedContext type - aligned with gemini_agent.js context objects
   interface LoadedContext {
@@ -740,7 +781,8 @@ async function handleSpawn(options: {
     : options.prompt;
 
   console.log();
-  logger.info(`Spawning ${brand.primary(agentDisplayName)} agent with model: ${brand.primary(model)}`);
+  logger.info(`Spawning ${brand.primary(agentDisplayName)} agent with ${brand.primary(cliProvider)} CLI`);
+  logger.info(`Model: ${brand.primary(model)}`);
   if (parentGkSessionId) {
     logger.info(`Parent session: ${brand.dim(parentGkSessionId.slice(0, 20) + '...')}`);
   }
@@ -752,6 +794,9 @@ async function handleSpawn(options: {
   }
   if (loadedContexts.length > 0) {
     logger.info(`Injected context: ${brand.dim(loadedContexts.map(c => c.name).join(', '))}`);
+  }
+  if (allTools.length > 0) {
+    logger.info(`Allowed tools: ${brand.dim(allTools.join(', '))}`);
   }
   console.log(ui.line());
   console.log();
@@ -796,13 +841,46 @@ async function handleSpawn(options: {
   // Start heartbeat
   const heartbeat = startHeartbeat(agentDisplayName);
 
-  // Spawn with environment variables
-  // Note: Sub-agent registration is handled by gk-session-init.cjs hook
-  // GK_SUB_SESSION_ID is passed so hook uses same ID (prevents duplicate agents)
-  const child = spawn('gemini', ['-y', '-m', model], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    shell: process.platform === 'win32',
-    env: {
+  // Build spawn args and command based on CLI provider
+  let cliCommand: string;
+  let spawnArgs: string[];
+  let spawnEnv: NodeJS.ProcessEnv;
+
+  if (cliProvider === 'claude') {
+    // Claude CLI: claude -p --model <model> --allowedTools tool1,tool2
+    cliCommand = 'claude';
+    spawnArgs = ['-p', '--model', model];
+
+    // Claude CLI expects: --allowedTools tool1,tool2 (comma-separated)
+    if (allTools.length > 0) {
+      spawnArgs.push('--allowedTools', allTools.join(','));
+    }
+
+    spawnEnv = {
+      ...process.env,
+      CLAUDE_TYPE: 'sub-agent',
+      GK_PARENT_SESSION_ID: parentGkSessionId || '',
+      GK_SUB_SESSION_ID: subAgentSessionId,
+      CLAUDE_AGENT_ROLE: agentDisplayName,
+      CLAUDE_AGENT_PROMPT: truncatedPrompt,
+      CLAUDE_AGENT_MODEL: model || '',
+      CLAUDE_AGENT_SKILLS: allSkills.join(','),
+      CLAUDE_AGENT_CONTEXT: injectedContext.join(','),
+      GK_ACTIVE_PLAN: activePlan || '',
+      GK_SUGGESTED_PLAN: suggestedPlan || '',
+      GK_PLAN_DATE_FORMAT: planDateFormat || ''
+    };
+  } else {
+    // Gemini CLI: gemini -m <model> --allowed-tools ["tool1","tool2"]
+    cliCommand = 'gemini';
+    spawnArgs = ['-m', model];
+
+    // Gemini CLI expects: --allowed-tools ["tool1","tool2","tool3"] (JSON array)
+    if (allTools.length > 0) {
+      spawnArgs.push('--allowed-tools', JSON.stringify(allTools));
+    }
+
+    spawnEnv = {
       ...process.env,
       GEMINI_TYPE: 'sub-agent',
       GEMINI_PARENT_SESSION_ID: parentGeminiSessionId || '',
@@ -816,7 +894,16 @@ async function handleSpawn(options: {
       GK_ACTIVE_PLAN: activePlan || '',
       GK_SUGGESTED_PLAN: suggestedPlan || '',
       GK_PLAN_DATE_FORMAT: planDateFormat || ''
-    }
+    };
+  }
+
+  // Spawn with environment variables
+  // Note: Sub-agent registration is handled by gk-session-init.cjs hook
+  // GK_SUB_SESSION_ID is passed so hook uses same ID (prevents duplicate agents)
+  const child = spawn(cliCommand, spawnArgs, {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    shell: process.platform === 'win32',
+    env: spawnEnv
   });
 
   let stdout = '';
