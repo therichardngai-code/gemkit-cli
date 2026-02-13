@@ -17,8 +17,8 @@ const GEMINI_TO_CLAUDE_MODEL: Record<string, string> = {
 };
 
 const CLAUDE_TO_GEMINI_MODEL: Record<string, string> = {
-  'opus': 'gemini-2.5-pro',
-  'sonnet': 'gemini-2.5-flash',
+  'opus': 'gemini-3-pro-preview',
+  'sonnet': 'gemini-3-flash-preview',
   'haiku': 'gemini-2.5-flash-lite',
 };
 
@@ -39,7 +39,7 @@ export function mapModel(model: string, targetProvider: CliProvider): string {
     if (model.startsWith('gemini-')) {
       return model;
     }
-    return CLAUDE_TO_GEMINI_MODEL[model] || 'gemini-2.5-flash'; // default: gemini-2.5-flash
+    return CLAUDE_TO_GEMINI_MODEL[model] || 'gemini-3-flash-preview'; // default: gemini-3-flash-preview
   }
 }
 
@@ -180,5 +180,5 @@ export function getSkillPaths(targetProvider: CliProvider): string[] {
  * Get default model for CLI provider
  */
 export function getDefaultModel(provider: CliProvider): string {
-  return provider === 'claude' ? 'sonnet' : 'gemini-2.5-flash';
+  return provider === 'claude' ? 'sonnet' : 'gemini-3-flash-preview';
 }

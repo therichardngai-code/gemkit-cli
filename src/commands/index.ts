@@ -20,6 +20,7 @@ import { registerCatalogCommand } from './catalog/index.js';
 import { registerPasteCommand } from './paste/index.js';
 import { registerConvertCommand } from './convert/index.js';
 import { registerOfficeCommand } from './office/index.js';
+import { registerTeamCommand } from './team/index.js';
 
 export function registerCommands(cli: CAC): void {
   registerInitCommand(cli);
@@ -38,4 +39,5 @@ export function registerCommands(cli: CAC): void {
   registerPasteCommand(cli);
   registerConvertCommand(cli);
   registerOfficeCommand(cli);
+  registerTeamCommand(cli);
 }

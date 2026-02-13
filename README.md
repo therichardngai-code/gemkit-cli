@@ -30,6 +30,7 @@ gk <command> [options]
 | `gk init` | Initialize GemKit in your project |
 | `gk new` | Create new agents, plans, or skills |
 | `gk agent` | Manage and spawn AI agents |
+| `gk team` | Multi-agent team coordination |
 | `gk office` | Agent Office visualization dashboard |
 | `gk session` | View and manage sessions |
 | `gk plan` | Work with execution plans |
@@ -44,7 +45,11 @@ gk <command> [options]
 | `gk convert` | Convert between formats |
 | `gk paste` | Handle image and video pasting |
 
-### Agent Commands
+## Agent Commands
+
+### One-Shot Mode (Spawn)
+
+Fire-and-forget agent execution that blocks until completion.
 
 | Command | Description |
 |---------|-------------|
@@ -62,12 +67,86 @@ gk <command> [options]
 - `--cli <provider>` - CLI provider: `gemini` (default) or `claude`
 - `--music` - Play elevator music while waiting
 
+### Interactive Mode
+
+Persistent AI session for multi-turn conversations with tool approval control.
+
+| Command | Description |
+|---------|-------------|
+| `gk agent start` | Start interactive session |
+| `gk agent send "<prompt>"` | Send prompt to session |
+| `gk agent wait [timeout]` | Wait for completion (default: 120s) |
+| `gk agent pending` | Check pending tool confirmations |
+| `gk agent exchange` | Get structured JSON output |
+| `gk agent read [lines]` | Read raw terminal output |
+| `gk agent status` | Check session status |
+| `gk agent stop` | Stop session |
+
+**Start Options:**
+- `-a, --agent <name>` - Agent profile name
+- `-s, --skills <list>` - Comma-separated skills
+- `-c, --context <files>` - Context files (@file syntax)
+- `-m, --model <model>` - Model override
+- `-t, --tools <list>` - Comma-separated tools to allow
+- `--cli <provider>` - CLI provider: `gemini` (default) or `claude`
+
 **CLI Providers:**
 - `gemini` - Uses Gemini CLI (default). Loads from `.gemini/agents/`
 - `claude` - Uses Claude CLI. Loads from `.claude/agents/`
-- Models and tools are automatically mapped between providers when using fallback
+- Models and tools are automatically mapped between providers
 
-### Agent Office Commands
+## Team Commands
+
+Coordinate multiple AI agents working in parallel on complex tasks.
+
+### Team Management
+
+| Command | Description |
+|---------|-------------|
+| `gk team create <name>` | Create a new team |
+| `gk team list` | List all teams |
+| `gk team info [teamId]` | Show team details |
+| `gk team kill [teamId]` | Emergency shutdown |
+| `gk team cleanup` | Clean up stale resources |
+| `gk team ports` | Show port allocations |
+| `gk team reset` | Delete all team data |
+
+### Task Management
+
+| Command | Description |
+|---------|-------------|
+| `gk team task-create "<subject>"` | Create a task |
+| `gk team task-claim <taskId>` | Claim a task |
+| `gk team task-done <taskId>` | Mark task completed |
+| `gk team tasks [teamId]` | List all tasks |
+
+### Agent Spawning
+
+| Command | Description |
+|---------|-------------|
+| `gk team start --name <agent>` | Spawn agent as team member |
+| `gk team start --name <agent> -a <profile>` | Spawn with explicit profile |
+| `gk team start --name <agent> --cli claude` | Use Claude CLI |
+
+### Messaging & Inbox
+
+| Command | Description |
+|---------|-------------|
+| `gk team send <agent> "<message>"` | Send message to member |
+| `gk team broadcast "<message>"` | Send to all members |
+| `gk team messages` | View central inbox |
+| `gk team messages --pending` | View pending items |
+| `gk team respond <msgId> --approve` | Approve request |
+| `gk team respond --approve-all` | Approve all pending |
+
+### Agent Interaction
+
+| Command | Description |
+|---------|-------------|
+| `gk team exchange <agent>` | Get structured output |
+| `gk team read <agent>` | Read raw output |
+
+## Agent Office Commands
 
 | Command | Description |
 |---------|-------------|
@@ -82,6 +161,8 @@ gk <command> [options]
 
 ## Quick Start
 
+### Single Agent (One-Shot)
+
 ```bash
 # Initialize in your project
 gk init
@@ -95,12 +176,65 @@ gk agent spawn -a researcher -s "frontend-design" -p "Build a dashboard"
 # Spawn with Claude CLI instead of Gemini
 gk agent spawn --cli claude -a researcher -p "Analyze the codebase"
 
-# Spawn with auto-approved tools
-gk agent spawn -a code-executor -t "Read,Write,Bash" -p "Fix the bug"
-
 # Search for the best agent for a task
 gk agent search "implement user authentication"
+```
 
+### Single Agent (Interactive)
+
+```bash
+# Start interactive session
+gk agent start -a researcher -s research
+
+# Send a prompt
+gk agent send "Research JWT best practices"
+gk agent wait
+
+# Check for tool approvals
+gk agent pending
+gk agent send "2"  # Approve for session
+
+# Get structured output
+gk agent exchange
+
+# Stop when done
+gk agent stop
+```
+
+### Multi-Agent Team
+
+```bash
+# Create a team
+gk team create my-project --desc "Feature implementation"
+
+# Create tasks
+gk team task-create "Research API patterns" --desc "Investigate REST vs GraphQL"
+gk team task-create "Implement backend" --desc "Build the API"
+
+# Spawn agents
+gk team start --name researcher-1 &
+gk team start --name developer-1 &
+
+# Wait for initialization, then assign work
+gk team send researcher-1 "Claim and complete the research task"
+gk team send developer-1 "Wait for research, then implement"
+
+# Monitor and approve
+gk team messages --pending
+gk team respond --approve-all
+
+# Check progress
+gk team tasks
+gk team exchange researcher-1
+
+# Cleanup when done
+gk team kill
+gk team reset
+```
+
+### Agent Office Dashboard
+
+```bash
 # Start the Agent Office dashboard
 gk office start
 

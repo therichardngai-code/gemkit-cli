@@ -27,7 +27,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=esm --minify --outfile=dist/index.js --external:ws",
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=esm --minify --outfile=dist/index.js --external:ws --external:node-pty",
     "build:dev": "tsc",
     "typecheck": "tsc --noEmit",
     "dev": "tsc --watch",
@@ -36,6 +36,7 @@
   "dependencies": {
     "cac": "^6.7.14",
     "dotenv": "^16.3.1",
+    "node-pty": "^1.1.0",
     "ora": "^8.0.1",
     "picocolors": "^1.1.1",
     "tar": "^7.5.2",

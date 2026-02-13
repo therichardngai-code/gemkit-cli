@@ -28,7 +28,7 @@ export const DEFAULT_CONFIG: GemKitConfig = {
   },
   paths: {},
   spawn: {
-    defaultModel: 'gemini-2.5-flash',
+    defaultModel: 'gemini-3-flash-preview',
     music: false,
   },
   office: {

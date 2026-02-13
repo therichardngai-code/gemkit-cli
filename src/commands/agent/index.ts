@@ -7,9 +7,10 @@
  */
 
 import type { CAC } from 'cac';
-import { spawn } from 'child_process';
+import { spawn, fork } from 'child_process';
 import { access, stat, readdir, readFile } from 'fs/promises';
 import { join, basename, extname, relative } from 'path';
+import { fileURLToPath } from 'url';
 import {
   listAgentProfiles,
   loadAgentProfile,
@@ -20,6 +21,17 @@ import {
 import { searchAgentSkillCombination, loadSkillContent } from '../../domains/agent/search.js';
 import { mapModel, mapTools, getDefaultModel } from '../../domains/agent/mappings.js';
 import type { CliProvider } from '../../domains/agent/types.js';
+import type { PtySessionState, LoadedContext } from '../../domains/agent/pty-types.js';
+import {
+  loadSession,
+  saveSession,
+  clearSession,
+  isSessionActive,
+  markFirstSendComplete
+} from '../../domains/agent/pty-session.js';
+import { buildFirstSendPrompt } from '../../domains/agent/pty-context.js';
+import { PtyClient } from '../../services/pty-client.js';
+import { PtyServer } from '../../services/pty-server.js';
 import { loadConfig } from '../../domains/config/manager.js';
 import { readEnv } from '../../domains/session/env.js';
 import { addAgent } from '../../domains/session/writer.js';
@@ -27,6 +39,14 @@ import { generateGkSessionId } from '../../services/hash.js';
 import { logger } from '../../services/logger.js';
 import { brand, ui, pc } from '../../utils/colors.js';
 import { ElevatorMusic } from '../../services/music.js';
+import { sanitizeProjectPath } from '../../utils/paths.js';
+import {
+  getTeam,
+  allocatePort,
+  releasePort,
+  addMemberToTeam,
+  updateMemberStatus
+} from '../../domains/team/index.js';
 
 // ============================================================================
 // HEARTBEAT MESSAGES (keeps shell alive & entertains)
@@ -151,17 +171,27 @@ function showMainHelp(): void {
   console.log(`  ${brand.primary('list')}              List all agent profiles`);
   console.log(`  ${brand.primary('info')} <name>       Show agent profile details`);
   console.log(`  ${brand.primary('search')} "<task>"   Find best agent+skills for a task`);
-  console.log(`  ${brand.primary('spawn')}             Spawn a sub-agent`);
+  console.log(`  ${brand.primary('spawn')}             Spawn a sub-agent (non-interactive)`);
+  console.log();
+  console.log('Interactive Mode:');
+  console.log(`  ${brand.primary('start')}             Start interactive session`);
+  console.log(`  ${brand.primary('send')} "<prompt>"   Send prompt to session`);
+  console.log(`  ${brand.primary('wait')} [timeout]    Wait for completion`);
+  console.log(`  ${brand.primary('exchange')}          Get structured output`);
+  console.log(`  ${brand.primary('pending')}           Check tool confirmations`);
+  console.log(`  ${brand.primary('read')} [lines]      Read raw output`);
+  console.log(`  ${brand.primary('status')}            Session status`);
+  console.log(`  ${brand.primary('stop')}              Stop session`);
   console.log();
   console.log('Examples:');
   console.log(`  ${brand.dim('gk agent list')}`);
-  console.log(`  ${brand.dim('gk agent info researcher')}`);
-  console.log(`  ${brand.dim('gk agent search "implement authentication"')}`);
   console.log(`  ${brand.dim('gk agent spawn -a researcher -p "research best practices"')}`);
+  console.log(`  ${brand.dim('gk agent start -a researcher -s research')}`);
+  console.log(`  ${brand.dim('gk agent send "analyze the codebase"')}`);
   console.log();
   console.log('Run with subcommand for specific help:');
-  console.log(`  ${brand.dim('gk agent list --help')}`);
   console.log(`  ${brand.dim('gk agent spawn --help')}`);
+  console.log(`  ${brand.dim('gk agent start --help')}`);
   console.log();
 }
 
@@ -265,6 +295,64 @@ function showSpawnHelp(): void {
   console.log();
 }
 
+function showStartHelp(): void {
+  console.log();
+  console.log(pc.bold(brand.geminiPurple('gk agent start')));
+  console.log(brand.dim('Start a single interactive AI session'));
+  console.log();
+  console.log('Usage:');
+  console.log(`  ${brand.primary('gk agent start')} [options]`);
+  console.log();
+  console.log('Options:');
+  console.log(`  ${brand.dim('-a, --agent <name>')}      Agent profile name`);
+  console.log(`  ${brand.dim('-s, --skills <list>')}     Comma-separated skill names`);
+  console.log(`  ${brand.dim('-c, --context <files>')}   Context files (@file syntax)`);
+  console.log(`  ${brand.dim('-m, --model <model>')}     Model override`);
+  console.log(`  ${brand.dim('-t, --tools <list>')}      Comma-separated tools to allow`);
+  console.log(`  ${brand.dim('--cli <provider>')}        CLI provider: gemini (default) or claude`);
+  console.log();
+  console.log('Examples:');
+  console.log(`  ${brand.dim('gk agent start -a researcher -s research')}`);
+  console.log(`  ${brand.dim('gk agent start --cli claude -a code-executor')}`);
+  console.log(`  ${brand.dim('gk agent start -m gemini-2.5-pro -t "read_file,write_file"')}`);
+  console.log();
+  console.log('After starting:');
+  console.log(`  ${brand.dim('gk agent send "your prompt"')}`);
+  console.log(`  ${brand.dim('gk agent wait')}`);
+  console.log(`  ${brand.dim('gk agent exchange')}`);
+  console.log(`  ${brand.dim('gk agent stop')}`);
+  console.log();
+  console.log('For team mode, use: gk team start --name <agent>');
+  console.log();
+}
+
+function showInteractiveHelp(): void {
+  console.log();
+  console.log(pc.bold(brand.geminiPurple('Interactive Mode Commands')));
+  console.log();
+  console.log('Session:');
+  console.log(`  ${brand.primary('start')} [options]    Start interactive session`);
+  console.log(`  ${brand.primary('stop')}              Stop interactive session`);
+  console.log(`  ${brand.primary('status')}            Check session status`);
+  console.log();
+  console.log('Interaction:');
+  console.log(`  ${brand.primary('send')} "<prompt>"   Send prompt to session`);
+  console.log(`  ${brand.primary('wait')} [timeout]    Wait for response completion`);
+  console.log(`  ${brand.primary('exchange')}          Get structured JSON output`);
+  console.log(`  ${brand.primary('pending')}           Check pending tool confirmations`);
+  console.log(`  ${brand.primary('read')} [lines]      Read raw output (debugging)`);
+  console.log();
+  console.log('Examples:');
+  console.log(`  ${brand.dim('gk agent start -a researcher -s research')}`);
+  console.log(`  ${brand.dim('gk agent send "research JWT best practices"')}`);
+  console.log(`  ${brand.dim('gk agent wait')}`);
+  console.log(`  ${brand.dim('gk agent pending')}`);
+  console.log(`  ${brand.dim('gk agent send "1"')}  ${brand.dim('# approve tool')}`);
+  console.log(`  ${brand.dim('gk agent exchange')}`);
+  console.log(`  ${brand.dim('gk agent stop')}`);
+  console.log();
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // COMMAND REGISTRATION
 // ═══════════════════════════════════════════════════════════════════════════
@@ -307,6 +395,18 @@ export function registerAgentCommand(cli: CAC): void {
           case 'spawn':
             showSpawnHelp();
             return;
+          case 'start':
+            showStartHelp();
+            return;
+          case 'send':
+          case 'wait':
+          case 'exchange':
+          case 'pending':
+          case 'read':
+          case 'status':
+          case 'stop':
+            showInteractiveHelp();
+            return;
           default:
             showMainHelp();
             return;
@@ -340,6 +440,42 @@ export function registerAgentCommand(cli: CAC): void {
           break;
         case 'spawn':
           await handleSpawn(options);
+          break;
+        // Interactive mode commands
+        case 'start':
+          await handleStart(options);
+          break;
+        case 'send':
+          if (!arg) {
+            console.log();
+            logger.error('Prompt required');
+            console.log(brand.dim('Usage: gk agent send "your prompt"'));
+            console.log();
+            process.exit(1);
+          }
+          await handleSend(arg);
+          break;
+        case 'wait':
+          await handleWait(arg ? parseInt(arg) : 120);
+          break;
+        case 'exchange':
+          await handleExchange();
+          break;
+        case 'pending':
+          await handlePending();
+          break;
+        case 'read':
+          await handleRead(arg ? parseInt(arg) : 200);
+          break;
+        case 'status':
+          await handleInteractiveStatus();
+          break;
+        case 'stop':
+          await handleStop();
+          break;
+        case '_server':
+          // Hidden command: runs server in background (spawned by start)
+          await handleServerInternal();
           break;
         default:
           showMainHelp();
@@ -487,6 +623,8 @@ async function handleSpawn(options: {
   cli?: string;
   music?: boolean;
   musicFile?: string;
+  team?: string;
+  name?: string;
 }) {
   if (!options.prompt) {
     console.log();
@@ -509,6 +647,50 @@ async function handleSpawn(options: {
   const suggestedPlan = env.SUGGESTED_PLAN || null;
   const planDateFormat = env.PLAN_DATE_FORMAT || null;
   const projectDir = env.PROJECT_DIR || null;
+
+  // Team context (if spawning as team member)
+  let teamContext: {
+    team: ReturnType<typeof getTeam>;
+    port: number;
+    memberName: string;
+    sanitizedProjectDir: string;
+  } | null = null;
+
+  if (options.team) {
+    const sanitizedProjectDir = sanitizeProjectPath(process.cwd());
+    const team = getTeam(sanitizedProjectDir, options.team);
+
+    if (!team) {
+      console.log();
+      logger.error(`Team not found: ${options.team}`);
+      console.log();
+      process.exit(1);
+    }
+
+    const memberName = options.name || options.agent || 'agent';
+
+    // Allocate port for this team member
+    const agentId = generateGkSessionId(`team-${memberName}`, process.pid);
+    const port = allocatePort(sanitizedProjectDir, agentId, team.teamId, null);
+
+    if (!port) {
+      console.log();
+      logger.error('No ports available for team member');
+      console.log();
+      process.exit(1);
+    }
+
+    teamContext = {
+      team,
+      port,
+      memberName,
+      sanitizedProjectDir
+    };
+
+    logger.info(`Spawning as team member: ${brand.primary(memberName)}`);
+    logger.info(`Team: ${brand.dim(team.teamName)} (${team.teamId.slice(0, 12)}...)`);
+    logger.info(`Port: ${brand.dim(port.toString())}`);
+  }
 
   // Load agent profile if specified (with fallback between providers)
   let profile = null;
@@ -897,6 +1079,30 @@ async function handleSpawn(options: {
     };
   }
 
+  // Add team environment variables if spawning as team member
+  if (teamContext) {
+    spawnEnv = {
+      ...spawnEnv,
+      GK_TEAM_ID: teamContext.team!.teamId,
+      GK_TEAM_NAME: teamContext.team!.teamName,
+      GK_TEAM_ROLE: 'member',
+      GK_TEAM_PORT: teamContext.port.toString(),
+      GK_TEAM_LEADER_PORT: teamContext.team!.leaderPort.toString(),
+      GK_AGENT_NAME: teamContext.memberName
+    };
+
+    // Register member in team
+    addMemberToTeam(teamContext.sanitizedProjectDir, teamContext.team!.teamId, {
+      agentId: subAgentSessionId,
+      name: teamContext.memberName,
+      agentType: options.agent || 'default',
+      role: 'member',
+      port: teamContext.port,
+      pid: null,  // Will be updated after spawn
+      status: 'starting'
+    });
+  }
+
   // Spawn with environment variables
   // Note: Sub-agent registration is handled by gk-session-init.cjs hook
   // GK_SUB_SESSION_ID is passed so hook uses same ID (prevents duplicate agents)
@@ -905,6 +1111,11 @@ async function handleSpawn(options: {
     shell: process.platform === 'win32',
     env: spawnEnv
   });
+
+  // Update team member PID after spawn
+  if (teamContext && child.pid) {
+    updateMemberStatus(teamContext.sanitizedProjectDir, teamContext.team!.teamId, subAgentSessionId, 'ready');
+  }
 
   let stdout = '';
   let stderr = '';
@@ -926,6 +1137,12 @@ async function handleSpawn(options: {
     if (elevatorMusic) {
       elevatorMusic.stop();
       console.log(brand.dim('Music stopped.'));
+    }
+
+    // Cleanup team member if applicable
+    if (teamContext) {
+      updateMemberStatus(teamContext.sanitizedProjectDir, teamContext.team!.teamId, subAgentSessionId, 'shutdown');
+      releasePort(teamContext.sanitizedProjectDir, subAgentSessionId);
     }
 
     console.log();
@@ -951,6 +1168,13 @@ async function handleSpawn(options: {
     if (elevatorMusic) {
       elevatorMusic.stop();
     }
+
+    // Cleanup team member if applicable
+    if (teamContext) {
+      updateMemberStatus(teamContext.sanitizedProjectDir, teamContext.team!.teamId, subAgentSessionId, 'shutdown');
+      releasePort(teamContext.sanitizedProjectDir, subAgentSessionId);
+    }
+
     console.log();
     logger.error(`Failed to spawn agent: ${err.message}`);
     console.log();
@@ -965,4 +1189,572 @@ async function handleSpawn(options: {
     child.kill('SIGTERM');
     process.exit(1);
   });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INTERACTIVE MODE HANDLERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function handleStart(options: {
+  agent?: string;
+  skills?: string;
+  context?: string;
+  model?: string;
+  tools?: string;
+  cli?: string;
+}) {
+  // Check if session already running
+  if (isSessionActive()) {
+    console.log();
+    logger.error('Session already running. Use "gk agent stop" first.');
+    console.log();
+    process.exit(1);
+  }
+
+  const cliProvider: CliProvider = (options.cli === 'claude') ? 'claude' : 'gemini';
+  const config = loadConfig();
+
+  // Load agent profile with fallback
+  let profile = null;
+  if (options.agent) {
+    profile = loadAgentProfileWithFallback(options.agent, cliProvider);
+    if (!profile) {
+      console.log();
+      logger.error(`Agent profile not found: ${options.agent}`);
+      console.log(brand.dim(`Searched: .${cliProvider === 'claude' ? 'claude' : 'gemini'}/agents/ and fallback folder`));
+      console.log();
+      process.exit(1);
+    }
+  }
+
+  // Determine model
+  let model = options.model || profile?.model || config.spawn.defaultModel;
+  model = mapModel(model, cliProvider);
+
+  // Build tools list
+  const cliTools = options.tools?.split(',').map(s => s.trim()).filter(Boolean) || [];
+  const agentTools = profile?.tools || [];
+  const mergedTools = [...new Set([...agentTools, ...cliTools])];
+  const allTools = mapTools(mergedTools, cliProvider);
+
+  // Build skills list and load content
+  const cliSkills = options.skills?.split(',').map(s => s.trim()).filter(Boolean) || [];
+  const agentSkills = profile?.skills || [];
+  const allSkills = [...new Set([...agentSkills, ...cliSkills])];
+
+  const skillContents: Record<string, string> = {};
+  for (const skill of allSkills) {
+    const content = loadSkillContent(skill);
+    if (content) skillContents[skill] = content;
+  }
+
+  // Load context files (reuse logic from handleSpawn)
+  const contextFiles: LoadedContext[] = [];
+  if (options.context) {
+    const contextRefs = options.context.split(',').flatMap(part => part.trim().split(/\s+/).filter(s => s)).filter(s => s);
+    for (const ref of contextRefs) {
+      try {
+        const loaded = await loadContextFile(ref);
+        if (Array.isArray(loaded)) {
+          contextFiles.push(...loaded);
+        } else {
+          contextFiles.push(loaded);
+        }
+      } catch (error) {
+        console.log();
+        logger.error((error as Error).message);
+        console.log();
+        process.exit(1);
+      }
+    }
+  }
+
+  // Single agent mode - fixed port
+  const sessionPort = 3377;
+
+  // Create session state
+  const sessionState: PtySessionState = {
+    provider: cliProvider,
+    model,
+    port: sessionPort,
+    pid: 0,
+    isFirstSend: true,
+    context: {
+      agentName: profile?.name || null,
+      agentContent: profile?.content || null,
+      skills: allSkills,
+      skillContents,
+      contextFiles,
+      tools: allTools
+    },
+    startedAt: new Date().toISOString()
+  };
+
+  // Save session state first (server will read it)
+  saveSession(sessionState);
+
+  console.log();
+  logger.info(`Starting ${brand.primary(cliProvider)} interactive session...`);
+  logger.info(`Model: ${brand.primary(model)}`);
+  if (profile) {
+    logger.info(`Agent: ${brand.dim(profile.name)}`);
+  }
+  if (allSkills.length > 0) {
+    logger.info(`Skills: ${brand.dim(allSkills.join(', '))}`);
+  }
+  if (allTools.length > 0) {
+    logger.info(`Tools: ${brand.dim(allTools.join(', '))}`);
+  }
+  console.log();
+
+  // Spawn server as DETACHED background process
+  const scriptPath = process.argv[1];
+  const serverProcess = spawn(process.execPath, [scriptPath, 'agent', '_server'], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+    cwd: process.cwd(),
+    env: process.env
+  });
+
+  serverProcess.unref();
+
+  // Update session with server PID
+  sessionState.pid = serverProcess.pid || 0;
+  saveSession(sessionState);
+
+  logger.info(`Server started (PID: ${serverProcess.pid}, Port: ${sessionPort})`);
+  logger.info('Waiting for AI to initialize...');
+
+  // Poll for server to be ready (up to 120s for first npx download)
+  const client = new PtyClient(sessionState.port);
+  const maxAttempts = 120;
+
+  for (let i = 0; i < maxAttempts; i++) {
+    await sleep(1000);
+    try {
+      const status = await client.status();
+      if (status.ready) {
+        console.log();
+        logger.success('Session ready!');
+        console.log();
+        console.log('Usage:');
+        console.log(`  ${brand.dim('gk agent send "your prompt"')}`);
+        console.log(`  ${brand.dim('gk agent wait')}`);
+        console.log(`  ${brand.dim('gk agent exchange')}`);
+        console.log(`  ${brand.dim('gk agent stop')}`);
+        console.log();
+        return;
+      }
+    } catch {
+      // Server not ready yet, continue polling
+    }
+    process.stdout.write('.');
+  }
+
+  // Timeout reached
+  console.log();
+  logger.warn('Server started but AI may still be initializing.');
+  logger.info('Check status with: gk agent status');
+  console.log();
+}
+
+/**
+ * Internal server handler - runs in background process (single agent mode)
+ */
+async function handleServerInternal() {
+  const session = loadSession();
+
+  if (!session) {
+    console.error('[Server] No session state found');
+    process.exit(1);
+  }
+
+  const server = new PtyServer({
+    provider: session.provider,
+    model: session.model,
+    tools: session.context.tools,
+    sessionState: session,
+    port: session.port,
+    debug: false
+  });
+
+  try {
+    await server.start();
+  } catch (err) {
+    console.error(`[Server] Failed to start: ${(err as Error).message}`);
+    clearSession();
+    process.exit(1);
+  }
+
+  // Handle shutdown signals
+  process.on('SIGINT', async () => {
+    await server.stop();
+    clearSession();
+    process.exit(0);
+  });
+
+  process.on('SIGTERM', async () => {
+    await server.stop();
+    clearSession();
+    process.exit(0);
+  });
+}
+
+/**
+ * Sleep helper
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function handleSend(prompt: string) {
+  const session = loadSession();
+  if (!session || !isSessionActive()) {
+    console.log();
+    logger.error('No active session. Use "gk agent start" first.');
+    console.log();
+    process.exit(1);
+  }
+
+  const client = new PtyClient(session.port);
+
+  let finalPrompt = prompt;
+
+  // First send: wrap with full context
+  if (session.isFirstSend) {
+    finalPrompt = buildFirstSendPrompt(prompt, session);
+    markFirstSendComplete();
+  }
+
+  try {
+    const result = await client.send(finalPrompt);
+    if (result.ok) {
+      logger.info(`Sent prompt${result.exchangeId ? ` (exchange: ${result.exchangeId.slice(0, 8)}...)` : ''}`);
+    } else {
+      logger.error(result.error || 'Failed to send');
+    }
+  } catch (err) {
+    logger.error(`Failed to send: ${(err as Error).message}`);
+    process.exit(1);
+  }
+}
+
+async function handleWait(timeout: number) {
+  const session = loadSession();
+  if (!session || !isSessionActive()) {
+    console.log();
+    logger.error('No active session.');
+    console.log();
+    process.exit(1);
+  }
+
+  const client = new PtyClient(session.port);
+  console.log(`Waiting for completion (timeout: ${timeout}s)...`);
+
+  const startTime = Date.now();
+  const timeoutMs = timeout * 1000;
+
+  while (Date.now() - startTime < timeoutMs) {
+    try {
+      const result = await client.complete();
+
+      if (result.complete) {
+        console.log('\nComplete!');
+        return;
+      }
+
+      if (result.reason === 'pending_tool') {
+        console.log('\n');
+        logger.warn('Tool confirmation required');
+        if (result.hint) {
+          console.log(brand.dim(result.hint));
+        }
+        console.log(brand.dim('Use: gk agent pending'));
+        return;
+      }
+    } catch (err) {
+      logger.error((err as Error).message);
+      return;
+    }
+
+    await sleep(2000);
+    process.stdout.write('.');
+  }
+
+  console.log('');
+  logger.warn('Timeout reached. AI may still be working.');
+}
+
+async function handleExchange() {
+  const session = loadSession();
+  if (!session || !isSessionActive()) {
+    console.log();
+    logger.error('No active session.');
+    console.log();
+    process.exit(1);
+  }
+
+  const client = new PtyClient(session.port);
+
+  try {
+    const exchange = await client.exchange();
+    console.log(JSON.stringify(exchange, null, 2));
+  } catch (err) {
+    logger.error((err as Error).message);
+    process.exit(1);
+  }
+}
+
+async function handlePending() {
+  const session = loadSession();
+  if (!session || !isSessionActive()) {
+    console.log();
+    logger.error('No active session.');
+    console.log();
+    process.exit(1);
+  }
+
+  const client = new PtyClient(session.port);
+
+  try {
+    const pending = await client.pending();
+
+    if (pending.hasPending) {
+      console.log();
+      logger.warn('Tool confirmation required');
+      console.log(JSON.stringify(pending, null, 2));
+      console.log();
+      console.log('To approve: ' + brand.primary('gk agent send "1"'));
+      console.log('To reject:  ' + brand.primary('gk agent send "3"'));
+      console.log();
+    } else {
+      console.log('No pending confirmations');
+    }
+  } catch (err) {
+    logger.error((err as Error).message);
+    process.exit(1);
+  }
+}
+
+async function handleRead(lines: number) {
+  const session = loadSession();
+  if (!session || !isSessionActive()) {
+    console.log();
+    logger.error('No active session.');
+    console.log();
+    process.exit(1);
+  }
+
+  const client = new PtyClient(session.port);
+
+  try {
+    const output = await client.read(lines);
+    console.log(output);
+  } catch (err) {
+    logger.error((err as Error).message);
+    process.exit(1);
+  }
+}
+
+async function handleInteractiveStatus() {
+  const session = loadSession();
+
+  if (!session) {
+    console.log('No session file found.');
+    return;
+  }
+
+  if (!isSessionActive()) {
+    console.log('Session file exists but process not running.');
+    console.log('Cleaning up...');
+    clearSession();
+    return;
+  }
+
+  const client = new PtyClient(session.port);
+
+  try {
+    const status = await client.status();
+
+    console.log();
+    console.log(pc.bold('Session: ') + brand.success('ACTIVE'));
+    console.log(`Provider: ${session.provider}`);
+    console.log(`Model: ${session.model}`);
+    console.log(`PID: ${session.pid}`);
+    console.log(`Started: ${session.startedAt}`);
+    console.log(`First send pending: ${session.isFirstSend}`);
+    if (session.context.agentName) {
+      console.log(`Agent: ${session.context.agentName}`);
+    }
+    if (session.context.skills.length > 0) {
+      console.log(`Skills: ${session.context.skills.join(', ')}`);
+    }
+    console.log(`Output buffer: ${status.outputLength} bytes`);
+    console.log();
+  } catch (err) {
+    logger.error((err as Error).message);
+    process.exit(1);
+  }
+}
+
+/**
+ * Check if a process is running by PID
+ */
+function isProcessRunning(pid: number): boolean {
+  if (!pid || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Force kill a process by PID (aligned with gk team kill)
+ */
+function forceKillProcess(pid: number): boolean {
+  if (!pid || pid <= 0) return false;
+
+  try {
+    if (process.platform === 'win32') {
+      // Use cmd.exe to run taskkill (works regardless of shell environment)
+      const { execSync } = require('child_process');
+      execSync(`cmd.exe /c taskkill /F /T /PID ${pid}`, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 5000
+      });
+    } else {
+      process.kill(pid, 'SIGKILL');
+    }
+    return true;
+  } catch {
+    // Try Node.js native kill as fallback
+    try {
+      process.kill(pid, 'SIGKILL');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+async function handleStop() {
+  const session = loadSession();
+
+  if (!session) {
+    console.log('No active session.');
+    return;
+  }
+
+  const pid = session.pid;
+
+  // Try graceful shutdown first via server command
+  if (isSessionActive()) {
+    try {
+      const client = new PtyClient(session.port);
+      await client.stop();
+      logger.info('Sent stop command to server...');
+
+      // Wait briefly for graceful shutdown
+      await sleep(2000);
+    } catch {
+      // Server may have already stopped
+    }
+  }
+
+  // Force kill if still running (aligned with gk team kill approach)
+  if (pid && isProcessRunning(pid)) {
+    logger.info(`Force killing server process (PID: ${pid})...`);
+    const killed = forceKillProcess(pid);
+    if (killed) {
+      logger.info(`Process ${pid} killed.`);
+    } else {
+      logger.warn(`Could not kill process ${pid} (may already be dead).`);
+    }
+  }
+
+  clearSession();
+  logger.success('Session stopped.');
+}
+
+// Helper: Load context file (simplified version)
+async function loadContextFile(contextRef: string): Promise<LoadedContext | LoadedContext[]> {
+  let fullPath = contextRef;
+
+  if (contextRef.startsWith('@')) {
+    const relativePath = contextRef.substring(1);
+    const searchPaths = [
+      join(process.cwd(), '.docs', relativePath),
+      join(process.cwd(), '.plans', relativePath),
+      join(process.cwd(), 'docs', relativePath),
+      join(process.cwd(), 'plans', relativePath),
+      join(process.cwd(), relativePath)
+    ];
+
+    let found = false;
+    for (const searchPath of searchPaths) {
+      try {
+        await access(searchPath);
+        fullPath = searchPath;
+        found = true;
+        break;
+      } catch {
+        continue;
+      }
+    }
+
+    if (!found) {
+      throw new Error(`Context file not found: ${contextRef}`);
+    }
+  }
+
+  const fileStat = await stat(fullPath);
+
+  if (fileStat.isDirectory()) {
+    // Load directory recursively
+    const contexts: LoadedContext[] = [];
+    const extensions = ['.md', '.txt', '.json', '.yaml', '.yml'];
+
+    async function walkDir(dirPath: string, depth: number = 0): Promise<void> {
+      if (depth > 3) return;
+      const entries = await readdir(dirPath, { withFileTypes: true });
+
+      for (const entry of entries) {
+        if (entry.name.startsWith('.')) continue;
+        const entryPath = join(dirPath, entry.name);
+
+        if (entry.isDirectory()) {
+          await walkDir(entryPath, depth + 1);
+        } else if (entry.isFile()) {
+          const ext = extname(entry.name).toLowerCase();
+          if (extensions.includes(ext)) {
+            const content = await readFile(entryPath, 'utf-8');
+            contexts.push({
+              type: 'context',
+              name: entry.name,
+              path: entryPath,
+              relativePath: relative(fullPath, entryPath),
+              content: content.trim(),
+              originalRef: `${contextRef}/${relative(fullPath, entryPath)}`
+            });
+          }
+        }
+      }
+    }
+
+    await walkDir(fullPath);
+    return contexts;
+  }
+
+  // Single file
+  const content = await readFile(fullPath, 'utf-8');
+  return {
+    type: 'context',
+    name: basename(fullPath),
+    path: fullPath,
+    content: content.trim(),
+    originalRef: contextRef
+  };
 }
