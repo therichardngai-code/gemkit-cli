@@ -4,7 +4,7 @@
  */
 
 import type { CAC } from 'cac';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { access, stat, readdir, readFile } from 'fs/promises';
 import { join, basename, extname, relative } from 'path';
 import { sanitizeProjectPath } from '../../utils/paths.js';
@@ -438,33 +438,127 @@ async function handleCleanup(projectDir: string) {
   console.log();
 }
 
+/**
+ * Kill processes listening on gk team port range (3377-3476)
+ * Handles orphaned processes even when team data is missing
+ * Supports Windows and Unix platforms
+ */
+async function killOrphanedPortProcesses(): Promise<number> {
+  const PORT_MIN = 3377;
+  const PORT_MAX = 3476;
+  let killed = 0;
+
+  const pidsToKill = new Set<number>();
+
+  try {
+    if (process.platform === 'win32') {
+      // Windows: parse netstat -ano output
+      const output = execSync('netstat -ano', { encoding: 'utf-8', timeout: 15000 });
+
+      for (const line of output.split('\n')) {
+        // Match: TCP    127.0.0.1:3377    0.0.0.0:0    LISTENING    12345
+        // Match: TCP    0.0.0.0:3377      0.0.0.0:0    LISTENING    12345
+        // Capture port and PID from any listening TCP connection
+        const match = line.match(/TCP\s+(?:127\.0\.0\.1|0\.0\.0\.0):(\d+)\s+\S+\s+LISTENING\s+(\d+)/i);
+        if (match) {
+          const port = parseInt(match[1], 10);
+          const pid = parseInt(match[2], 10);
+          if (port >= PORT_MIN && port <= PORT_MAX && pid > 0) {
+            pidsToKill.add(pid);
+          }
+        }
+      }
+    } else {
+      // Unix: try lsof first (macOS + Linux), fallback to ss (Linux)
+      let output = '';
+      try {
+        output = execSync(`lsof -iTCP:${PORT_MIN}-${PORT_MAX} -sTCP:LISTEN -t 2>/dev/null`, {
+          encoding: 'utf-8',
+          timeout: 15000
+        });
+      } catch {
+        try {
+          // ss output format: LISTEN  0  128  0.0.0.0:3377  0.0.0.0:*  users:(("node",pid=1234,fd=3))
+          output = execSync(`ss -tlnp 2>/dev/null | grep -E ':3[34][0-9]{2}\\s'`, {
+            encoding: 'utf-8',
+            timeout: 15000
+          });
+          // Extract PIDs from ss output
+          const pidMatches = output.matchAll(/pid=(\d+)/g);
+          for (const m of pidMatches) {
+            const pid = parseInt(m[1], 10);
+            if (pid > 1) pidsToKill.add(pid);
+          }
+          output = ''; // Already processed
+        } catch {
+          // Neither lsof nor ss available
+        }
+      }
+
+      // Parse lsof -t output (just PIDs, one per line)
+      if (output) {
+        for (const pidStr of output.trim().split('\n')) {
+          const pid = parseInt(pidStr.trim(), 10);
+          if (pid > 1) pidsToKill.add(pid);
+        }
+      }
+    }
+  } catch {
+    // Port scanning failed
+  }
+
+  // Kill collected PIDs
+  for (const pid of pidsToKill) {
+    try {
+      if (process.platform === 'win32') {
+        execSync(`taskkill /F /T /PID ${pid}`, {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          timeout: 5000
+        });
+      } else {
+        process.kill(pid, 'SIGKILL');
+      }
+      killed++;
+      logger.info(`  Killed orphaned process PID ${pid}`);
+    } catch {
+      // Process already exited
+    }
+  }
+
+  return killed;
+}
+
 async function handleKill(projectDir: string, teamId: string | undefined) {
   if (!teamId) {
     // Kill all teams
     const teams = listTeams(projectDir).filter(t => t.status === 'active');
 
-    if (teams.length === 0) {
-      console.log();
-      logger.info('No active teams found.');
-      console.log();
-      return;
-    }
-
-    console.log();
-    logger.warn(`Emergency shutdown of ${teams.length} team(s)...`);
-
     let totalKilled = 0;
     let totalCleaned = 0;
 
-    for (const team of teams) {
-      const result = await emergencyTeamShutdown(projectDir, team.teamId);
-      totalKilled += result.killed;
-      totalCleaned += result.cleaned;
-      logger.info(`  ${team.teamName}: killed ${result.killed}, cleaned ${result.cleaned}`);
+    if (teams.length > 0) {
+      console.log();
+      logger.warn(`Emergency shutdown of ${teams.length} team(s)...`);
+
+      for (const team of teams) {
+        const result = await emergencyTeamShutdown(projectDir, team.teamId);
+        totalKilled += result.killed;
+        totalCleaned += result.cleaned;
+        logger.info(`  ${team.teamName}: killed ${result.killed}, cleaned ${result.cleaned}`);
+      }
     }
 
+    // Also kill any orphaned processes on gk ports (even if no team data)
     console.log();
-    logger.success(`Total: ${totalKilled} process(es) killed, ${totalCleaned} member(s) cleaned up.`);
+    logger.info('Scanning for orphaned processes on ports 3377-3476...');
+    const orphansKilled = await killOrphanedPortProcesses();
+    totalKilled += orphansKilled;
+
+    if (totalKilled === 0 && totalCleaned === 0) {
+      logger.info('No processes found to kill.');
+    } else {
+      logger.success(`Total: ${totalKilled} process(es) killed, ${totalCleaned} member(s) cleaned up.`);
+    }
     console.log();
     return;
   }
